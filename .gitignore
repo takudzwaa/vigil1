@@ -1,0 +1,8 @@
+# Firebase config - contains sensitive info
+firebase-config.js
+
+# Other common ignores
+node_modules/
+*.log
+.DS_Store
+.netlify

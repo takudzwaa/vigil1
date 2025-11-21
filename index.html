@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Inline SVG favicon to prevent browser requesting /favicon.ico and causing 404 -->
+    <link rel="icon" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230f172a'/><text x='50' y='65' font-size='60' text-anchor='middle' fill='%23ffffff' font-family='Arial,Helvetica,sans-serif'>V</text></svg>">
+    <title>Vigil1 - Wildlife & Poacher Monitoring Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+        import { getDatabase, ref, get, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { firebaseConfig } from './firebase-config.js';
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+
+        // Make database and functions available globally
+        window.firebaseDatabase = database;
+        window.firebaseRef = ref;
+        window.firebaseGet = get;
+        window.firebaseOnValue = onValue; // For real-time updates
+        
+        console.log('✓ Firebase SDK initialized with real-time listener support');
+    </script>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>🦁 Vigil1 - Wildlife Monitoring System</h1>
+            <div class="header-stats">
+                <div class="stat-item">
+                    <span class="stat-label">Active Devices</span>
+                    <span class="stat-value" id="activeDevices">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Animals Detected</span>
+                    <span class="stat-value" id="animalsDetected">0</span>
+                </div>
+                <div class="stat-item alert">
+                    <span class="stat-label">Poacher Alerts</span>
+                    <span class="stat-value" id="poacherAlerts">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Rangers Detected</span>
+                    <span class="stat-value" id="rangersDetected">0</span>
+                </div>
+            </div>
+            <div style="margin-top:12px; display:flex; gap:12px; align-items:center;">
+                <div id="firebaseStatus" class="firebase-status firebase-demo" title="Firebase connection status">
+                    <span class="firebase-dot"></span>
+                    <span id="firebaseStatusText">Demo Mode</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="pulse"></span>
+                    <span>Live Data</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="dashboard-grid">
+            <!-- Left Panel - Device List -->
+            <div class="device-panel">
+                <div class="panel-header">
+                    <h2>📡 Field Devices</h2>
+                    <div class="status-indicator">
+                        <span class="pulse"></span>
+                        <span>Live Data</span>
+                    </div>
+                </div>
+                <div id="deviceList" class="device-list">
+                    <!-- Device cards will be inserted here -->
+                </div>
+            </div>
+
+            <!-- Right Panel - Map View -->
+            <div class="map-panel">
+                <div class="panel-header">
+                    <h2>🗺️ GPS Tracking Map</h2>
+                    <div class="map-controls">
+                        <button id="centerMap" class="btn-control">Center Map</button>
+                        <button id="toggleHeatmap" class="btn-control">Toggle Alerts</button>
+                    </div>
+                </div>
+                <div id="map" class="map-container"></div>
+                <div class="map-legend">
+                    <div class="legend-item">
+                        <span class="legend-icon normal">📍</span>
+                        <span>Normal Status</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-icon alert">🔴</span>
+                        <span>Poacher Alert</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-icon ranger">🟢</span>
+                        <span>Ranger Present</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-icon animal">🦁</span>
+                        <span>Wildlife Detected</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Activity Log -->
+        <div class="activity-panel">
+            <div class="panel-header">
+                <h2>📋 Recent Activity</h2>
+                <button id="clearLog" class="btn-control">Clear Log</button>
+            </div>
+            <div id="activityLog" class="activity-log">
+                <!-- Activity items will be inserted here -->
+            </div>
+        </div>
+
+        <!-- Data Logs Panel -->
+        <div class="activity-panel" style="margin-top: 20px;">
+            <div class="panel-header">
+                <h2>💾 Data Logs</h2>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 14px; color: #6b7280;">Total: <span id="logCount" style="font-weight: bold; color: #10b981;">0</span> entries</span>
+                    <button id="viewLogs" class="btn-control" title="View logs in console">👁️ View</button>
+                    <button id="downloadLogs" class="btn-control" title="Download as JSON">📥 JSON</button>
+                    <button id="downloadLogsCSV" class="btn-control" title="Download as CSV">📥 CSV</button>
+                    <button id="clearLogs" class="btn-control" style="background: #ef4444;" title="Clear all logs">🗑️ Clear</button>
+                </div>
+            </div>
+            <div style="padding: 15px; background: #1f2937; border-radius: 8px; margin-top: 10px;">
+                <p style="margin: 0; color: #9ca3af; font-size: 14px;">
+                    📝 All incoming Firebase data is automatically logged and saved. Logs persist across browser sessions.
+                </p>
+                <p style="margin: 10px 0 0 0; color: #9ca3af; font-size: 13px;">
+                    • <strong>View:</strong> Display logs in browser console<br>
+                    • <strong>JSON:</strong> Download complete log data with full details<br>
+                    • <strong>CSV:</strong> Download spreadsheet-compatible format<br>
+                    • <strong>Clear:</strong> Remove all stored logs
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>Vigil1 Wildlife Monitoring System | Techbots - CHS</p>
+    </footer>
+
+  
+         <script>window.FIREBASE_RTDB_URL = 'https://your-project-id-default-rtdb.firebaseio.com';</script>
+
+    <script src="app.js"></script>
+</body>
+</html>
