@@ -2,7 +2,7 @@
 // Data sourced from Firebase Realtime Database
 
 // Configuration
-const NUM_DEVICES = 8;
+const NUM_DEVICES = 1;
 const UPDATE_INTERVAL = 5000; // 5 seconds
 const ACTIVITY_LOG_MAX = 50;
 const FIREBASE_RTDB_URL = 'https://vigil1-default-rtdb.firebaseio.com/';
@@ -25,6 +25,10 @@ const BASE_LAT = -17.351880;
 const BASE_LNG = 30.206747;
 const GPS_RANGE = 0.08; // Reduced range to keep devices within ranch vicinity
 
+// User location (fallback if Firebase has no location)
+let userLat = BASE_LAT;
+let userLng = BASE_LNG;
+
 // Global state
 let devices = [];
 let map = null;
@@ -40,8 +44,8 @@ const MAX_LOG_ENTRIES = 1000; // Maximum number of log entries to keep in memory
 class FieldDevice {
     constructor(data) {
         this.id = data.id || 'unknown';
-        this.lat = data.lat || BASE_LAT;
-        this.lng = data.lng || BASE_LNG;
+        this.lat = (data.lat !== undefined && data.lat !== null) ? data.lat : BASE_LAT;
+        this.lng = (data.lng !== undefined && data.lng !== null) ? data.lng : BASE_LNG;
         this.status = data.status || 'offline';
         this.lastUpdate = data.lastUpdate ? new Date(data.lastUpdate) : new Date();
         this.detectedAnimal = data.detectedAnimal || null;
@@ -63,23 +67,40 @@ class FieldDevice {
     }
 }
 
+// Get user location from browser
+function getUserLocation() {
+    if (navigator.geolocation) {
+        console.log('📍 Requesting user location...');
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                userLat = position.coords.latitude;
+                userLng = position.coords.longitude;
+                console.log(`✓ User location obtained: ${userLat}, ${userLng}`);
+                
+                // If we have devices that are using the default location, update them
+                // This is a simple way to refresh the view if the location comes in late
+                if (devices.length > 0 && devices[0].lat === BASE_LAT && devices[0].lng === BASE_LNG) {
+                    console.log('🔄 Updating existing devices with user location');
+                    pollFirebaseAndUpdate();
+                }
+            },
+            (error) => {
+                console.warn(`⚠ Could not get user location: ${error.message}. Using default: ${BASE_LAT}, ${BASE_LNG}`);
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+    } else {
+        console.warn('⚠ Geolocation is not supported by this browser.');
+    }
+}
+
 // Initialize devices
 function initializeDevices() {
     // If a Firebase RTDB URL is provided, we'll fetch real devices there.
     // Otherwise, fall back to the simulated devices.
     devices = [];
-    if (FIREBASE_RTDB_URL) {
-        // We'll populate devices async during initialization/polling.
-        // Create placeholder offline devices so the UI can initialize quickly.
-        for (let i = 1; i <= NUM_DEVICES; i++) {
-            const d = new FieldDevice({ id: `RPI5-${String(i).padStart(3, '0')}`, status: 'offline' });
-            devices.push(d);
-        }
-    } else {
-        for (let i = 1; i <= NUM_DEVICES; i++) {
-            devices.push(new FieldDevice({ id: `RPI5-${String(i).padStart(3, '0')}` }));
-        }
-    }
+    // Only create RPI5-001
+    devices.push(new FieldDevice({ id: 'RPI5-001', status: 'offline' }));
 }
 
 // Fetch devices from Firebase Realtime Database
@@ -102,6 +123,8 @@ async function fetchDevicesFromFirebase() {
             console.log('  - human_count:', data.human_count);
             console.log('  - ble_present:', data.ble_present);
             console.log('  - timestamp:', data.timestamp);
+            console.log('  - lat/latitude:', data.lat, data.latitude);
+            console.log('  - lng/longitude:', data.lng, data.longitude);
             
             // Map Firebase fields to device data
             let detectedAnimal = null;
@@ -136,35 +159,54 @@ async function fetchDevicesFromFirebase() {
             }
             
             // Parse coordinates - handle both string and number formats
-            let lat = BASE_LAT;
-            let lng = BASE_LNG;
+            let lat = userLat;
+            let lng = userLng;
             
-            if (data.lat !== undefined && data.lat !== null) {
-                lat = typeof data.lat === 'string' ? parseFloat(data.lat) : data.lat;
-            } else if (data.latitude !== undefined && data.latitude !== null) {
-                lat = typeof data.latitude === 'string' ? parseFloat(data.latitude) : data.latitude;
-            }
-            
-            if (data.lng !== undefined && data.lng !== null) {
-                lng = typeof data.lng === 'string' ? parseFloat(data.lng) : data.lng;
-            } else if (data.longitude !== undefined && data.longitude !== null) {
-                lng = typeof data.longitude === 'string' ? parseFloat(data.longitude) : data.longitude;
-            }
+            // Helper to parse coordinate
+            const parseCoord = (val) => {
+                if (val === undefined || val === null) return null;
+                const parsed = typeof val === 'string' ? parseFloat(val) : val;
+                return isNaN(parsed) ? null : parsed;
+            };
+
+            const firebaseLat = parseCoord(data.lat) ?? parseCoord(data.latitude);
+            const firebaseLng = parseCoord(data.lng) ?? parseCoord(data.longitude);
+
+            if (firebaseLat !== null) lat = firebaseLat;
+            if (firebaseLng !== null) lng = firebaseLng;
+
+            console.log(`  - Location resolved: ${lat}, ${lng} (Source: ${firebaseLat !== null ? 'Firebase' : 'Fallback/User'})`);
             
             // Parse timestamp
             let rawTs = data.timestamp ?? data.time ?? data.ts ?? new Date().toISOString();
+            
+            // Handle numeric strings (e.g. "1715..." as string)
+            if (typeof rawTs === 'string' && !isNaN(rawTs) && !rawTs.includes(':') && !rawTs.includes('-')) {
+                rawTs = Number(rawTs);
+            }
+
             let lastUpdate;
             if (typeof rawTs === 'number') {
                 // If seconds (10 digits) convert to ms, otherwise assume ms
-                lastUpdate = new Date(rawTs > 1e12 ? rawTs : rawTs * 1000);
+                // Threshold 1e11 handles dates after 1973 for ms timestamps
+                lastUpdate = new Date(rawTs > 1e11 ? rawTs : rawTs * 1000);
             } else {
                 lastUpdate = new Date(rawTs);
             }
-            if (isNaN(lastUpdate.getTime())) lastUpdate = new Date();
+            
+            if (isNaN(lastUpdate.getTime())) {
+                console.warn('  - Invalid timestamp parsed, defaulting to NOW');
+                lastUpdate = new Date();
+            }
 
-            // Consider device online if data is at most 2 minutes old
+            // Consider device online if data is at most 5 minutes old (increased tolerance)
             const ageMs = Date.now() - lastUpdate.getTime();
-            const status = ageMs <= 120_000 ? 'online' : 'offline';
+            const isUpToDate = ageMs <= 300_000; // 5 minutes
+            const status = isUpToDate ? 'online' : 'offline';
+            
+            console.log(`  - Time check debug: rawTs=${rawTs} (${typeof rawTs})`);
+            console.log(`  - Parsed: ${lastUpdate.toLocaleString()} vs Now: ${new Date().toLocaleString()}`);
+            console.log(`  - Age: ${Math.round(ageMs/1000)}s. Threshold: 300s. Status: ${status}`);
 
             const deviceData = {
                 id: 'RPI5-001',
@@ -908,34 +950,52 @@ function processFirebaseData(data) {
     }
     
     // Parse coordinates
-    let lat = BASE_LAT;
-    let lng = BASE_LNG;
+    let lat = userLat;
+    let lng = userLng;
     
-    if (data.lat !== undefined && data.lat !== null) {
-        lat = typeof data.lat === 'string' ? parseFloat(data.lat) : data.lat;
-    } else if (data.latitude !== undefined && data.latitude !== null) {
-        lat = typeof data.latitude === 'string' ? parseFloat(data.latitude) : data.latitude;
-    }
+    // Helper to parse coordinate
+    const parseCoord = (val) => {
+        if (val === undefined || val === null) return null;
+        const parsed = typeof val === 'string' ? parseFloat(val) : val;
+        return isNaN(parsed) ? null : parsed;
+    };
+
+    const firebaseLat = parseCoord(data.lat) ?? parseCoord(data.latitude);
+    const firebaseLng = parseCoord(data.lng) ?? parseCoord(data.longitude);
+
+    if (firebaseLat !== null) lat = firebaseLat;
+    if (firebaseLng !== null) lng = firebaseLng;
     
-    if (data.lng !== undefined && data.lng !== null) {
-        lng = typeof data.lng === 'string' ? parseFloat(data.lng) : data.lng;
-    } else if (data.longitude !== undefined && data.longitude !== null) {
-        lng = typeof data.longitude === 'string' ? parseFloat(data.longitude) : data.longitude;
-    }
+    console.log(`  - Location resolved: ${lat}, ${lng} (Source: ${firebaseLat !== null ? 'Firebase' : 'Fallback/User'})`);
     
     // Parse timestamp
     let rawTs = data.timestamp ?? data.time ?? data.ts ?? new Date().toISOString();
+    
+    // Handle numeric strings
+    if (typeof rawTs === 'string' && !isNaN(rawTs) && !rawTs.includes(':') && !rawTs.includes('-')) {
+        rawTs = Number(rawTs);
+    }
+
     let lastUpdate;
     if (typeof rawTs === 'number') {
-        lastUpdate = new Date(rawTs > 1e12 ? rawTs : rawTs * 1000);
+        lastUpdate = new Date(rawTs > 1e11 ? rawTs : rawTs * 1000);
     } else {
         lastUpdate = new Date(rawTs);
     }
-    if (isNaN(lastUpdate.getTime())) lastUpdate = new Date();
+    
+    if (isNaN(lastUpdate.getTime())) {
+        console.warn('  - Invalid timestamp parsed, defaulting to NOW');
+        lastUpdate = new Date();
+    }
 
-    // Consider device online if data is at most 2 minutes old
+    // Consider device online if data is at most 5 minutes old
     const ageMs = Date.now() - lastUpdate.getTime();
-    const status = ageMs <= 120_000 ? 'online' : 'offline';
+    const isUpToDate = ageMs <= 300_000; // 5 minutes
+    const status = isUpToDate ? 'online' : 'offline';
+    
+    console.log(`  - Time check debug: rawTs=${rawTs} (${typeof rawTs})`);
+    console.log(`  - Parsed: ${lastUpdate.toLocaleString()} vs Now: ${new Date().toLocaleString()}`);
+    console.log(`  - Age: ${Math.round(ageMs/1000)}s. Threshold: 300s. Status: ${status}`);
 
     const deviceData = {
         id: 'RPI5-001',
@@ -994,6 +1054,9 @@ function initialize() {
     
     // Load stored logs from localStorage
     loadStoredLogs();
+    
+    // Get user location for fallback
+    getUserLocation();
     
     // Initialize devices first
     initializeDevices();
